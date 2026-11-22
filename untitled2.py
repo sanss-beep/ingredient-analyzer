@@ -24,12 +24,46 @@ except Exception:
 if not api_key:
     api_key = st.sidebar.text_input("Paste Gemini API Key:", type="password")
 
+# 4. Auto-Discover REAL Active Models on Your Exact API Key (Zero Guessing)
+@st.cache_data(ttl=600, show_spinner=False)
+def get_live_models(key):
+    try:
+        c = genai.Client(api_key=key)
+        found = []
+        skip_words = (
+            "embedding", "imagen", "veo", "tts", "audio", "aqa",
+            "robotics", "computer-use", "deep-research", "live"
+        )
+        for m in c.models.list():
+            name = (m.name or "").replace("models/", "")
+            actions = getattr(m, "supported_actions", None) or []
+            supports_gen = ("generateContent" in actions) if actions else True
+            if supports_gen and "gemini" in name.lower() and not any(w in name.lower() for w in skip_words):
+                found.append(name)
+
+        found.sort(reverse=True)  # Newest versions first
+        flash_lite = [m for m in found if "flash-lite" in m]
+        flash = [m for m in found if "flash" in m and "flash-lite" not in m]
+        other = [m for m in found if "flash" not in m]
+        ordered = flash_lite + flash + other
+        return ordered if ordered else ["gemini-3.8-flash"]
+    except Exception:
+        return ["gemini-3.8-flash"]
+
+available_models = get_live_models(api_key) if api_key else []
+selected_mode = st.sidebar.selectbox(
+    "🤖 AI Model:",
+    ["Auto (Best Available)"] + available_models
+)
+if available_models:
+    st.sidebar.caption(f"Detected {len(available_models)} live models on your key.")
+
 st.sidebar.info("Class 12 Investigatory Project Prototype")
 
-# 4. Image Upload Button
+# 5. Image Upload Button
 uploaded_file = st.file_uploader("📸 Upload or Take a Photo of an Ingredient Label", type=["jpg", "jpeg", "png"])
 
-# 5. Display Image & Analyze
+# 6. Display Image & Analyze
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Label", use_container_width=True)
@@ -42,7 +76,7 @@ if uploaded_file is not None:
                 try:
                     client = genai.Client(api_key=api_key)
 
-                    # Resize large phone photos so the API processes them faster and fails less
+                    # Resize large phone photos for faster, more reliable uploads
                     api_image = image.copy()
                     api_image.thumbnail((1024, 1024))
 
@@ -74,42 +108,34 @@ if uploaded_file is not None:
                     Suggest 2 healthier or more natural alternatives.
                     """
 
-                    # Automatic fallback list: if one model is overloaded (503), jump to the next
-                    models_to_try = [
-                        "gemini-3.8-flash",
-                        "gemini-2.5-flash",
-                        "gemini-2.5-flash-lite",
-                        "gemini-2.0-flash",
-                    ]
+                    if selected_mode == "Auto (Best Available)":
+                        models_to_try = available_models[:6] if available_models else ["gemini-3.8-flash"]
+                    else:
+                        models_to_try = [selected_mode]
 
                     response = None
                     used_model = None
-                    last_error = None
+                    error_log = []
 
                     for model_name in models_to_try:
-                        for attempt in range(2):
-                            try:
-                                response = client.models.generate_content(
-                                    model=model_name,
-                                    contents=[prompt, api_image],
-                                    config=types.GenerateContentConfig(
-                                        temperature=1.2,
-                                        top_p=0.95
-                                    )
+                        try:
+                            response = client.models.generate_content(
+                                model=model_name,
+                                contents=[prompt, api_image],
+                                config=types.GenerateContentConfig(
+                                    temperature=1.0,
+                                    top_p=0.95
                                 )
-                                used_model = model_name
-                                break
-                            except Exception as e:
-                                last_error = e
-                                if "503" in str(e) and attempt == 0:
-                                    time.sleep(2)
-                                else:
-                                    break  # Switch to next backup model
-                        if response is not None:
+                            )
+                            used_model = model_name
                             break
+                        except Exception as e:
+                            error_log.append(f"- **`{model_name}`**: {e}")
+                            time.sleep(1)
 
                     if response is None:
-                        st.error(f"All AI models are currently busy. Last error: {last_error}")
+                        st.error("All available models failed. Exact breakdown:")
+                        st.markdown("\n".join(error_log))
                     elif response.text is None:
                         st.error(f"⚠️ The AI blocked the response! Reason: {response.candidates[0].finish_reason}")
                     else:
