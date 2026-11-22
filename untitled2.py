@@ -42,6 +42,10 @@ if uploaded_file is not None:
                 try:
                     client = genai.Client(api_key=api_key)
 
+                    # Resize large phone photos so the API processes them faster and fails less
+                    api_image = image.copy()
+                    api_image.thumbnail((1024, 1024))
+
                     prompt = """
                     Look at the ingredients in this image and create an original student summary report.
                     CRITICAL RULE: Do NOT transcribe or copy the ingredient list word-for-word from the image, as copying packaging text triggers copyright filters.
@@ -70,29 +74,46 @@ if uploaded_file is not None:
                     Suggest 2 healthier or more natural alternatives.
                     """
 
-                    # Auto-retry up to 3 times if Google's servers are temporarily busy (503)
-                    response = None
-                    for attempt in range(3):
-                        try:
-                            response = client.models.generate_content(
-                                model="gemini-3.8-flash",
-                                contents=[prompt, image],
-                                config=types.GenerateContentConfig(
-                                    temperature=1.2,
-                                    top_p=0.95
-                                )
-                            )
-                            break
-                        except Exception as e:
-                            if "503" in str(e) and attempt < 2:
-                                time.sleep(3)
-                            else:
-                                raise e
+                    # Automatic fallback list: if one model is overloaded (503), jump to the next
+                    models_to_try = [
+                        "gemini-3.8-flash",
+                        "gemini-2.5-flash",
+                        "gemini-2.5-flash-lite",
+                        "gemini-2.0-flash",
+                    ]
 
-                    if response.text is None:
+                    response = None
+                    used_model = None
+                    last_error = None
+
+                    for model_name in models_to_try:
+                        for attempt in range(2):
+                            try:
+                                response = client.models.generate_content(
+                                    model=model_name,
+                                    contents=[prompt, api_image],
+                                    config=types.GenerateContentConfig(
+                                        temperature=1.2,
+                                        top_p=0.95
+                                    )
+                                )
+                                used_model = model_name
+                                break
+                            except Exception as e:
+                                last_error = e
+                                if "503" in str(e) and attempt == 0:
+                                    time.sleep(2)
+                                else:
+                                    break  # Switch to next backup model
+                        if response is not None:
+                            break
+
+                    if response is None:
+                        st.error(f"All AI models are currently busy. Last error: {last_error}")
+                    elif response.text is None:
                         st.error(f"⚠️ The AI blocked the response! Reason: {response.candidates[0].finish_reason}")
                     else:
-                        st.success("✅ Analysis Complete!")
+                        st.success(f"✅ Analysis Complete! (Powered by `{used_model}`)")
                         st.markdown("---")
                         st.markdown(response.text)
 
