@@ -1,3 +1,4 @@
+iimport time
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -10,12 +11,17 @@ st.set_page_config(page_title="PureScan AI", page_icon="🔍", layout="centered"
 st.title("🔍 PureScan: Food & Cosmetic Analyzer")
 st.write("Upload a photo of any food or skincare ingredient list to uncover hidden toxins, allergens, chemical conflicts, and deceptive marketing!")
 
-# 3. API Key Setup (Reads safely from Streamlit Secrets first)
+# 3. API Key Setup (Safe on both Streamlit Cloud and locally)
 st.sidebar.header("⚙️ Project Settings")
-if "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    st.sidebar.success("API Key loaded securely.")
-else:
+api_key = ""
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        st.sidebar.success("API Key loaded securely.")
+except Exception:
+    pass
+
+if not api_key:
     api_key = st.sidebar.text_input("Paste Gemini API Key:", type="password")
 
 st.sidebar.info("Class 12 Investigatory Project Prototype")
@@ -64,14 +70,24 @@ if uploaded_file is not None:
                     Suggest 2 healthier or more natural alternatives.
                     """
 
-                    response = client.models.generate_content(
-                        model="gemini-3.8-flash",
-                        contents=[prompt, image],
-                        config=types.GenerateContentConfig(
-                            temperature=1.2,
-                            top_p=0.95
-                        )
-                    )
+                    # Auto-retry up to 3 times if Google's servers are temporarily busy (503)
+                    response = None
+                    for attempt in range(3):
+                        try:
+                            response = client.models.generate_content(
+                                model="gemini-3.8-flash",
+                                contents=[prompt, image],
+                                config=types.GenerateContentConfig(
+                                    temperature=1.2,
+                                    top_p=0.95
+                                )
+                            )
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 2:
+                                time.sleep(3)
+                            else:
+                                raise e
 
                     if response.text is None:
                         st.error(f"⚠️ The AI blocked the response! Reason: {response.candidates[0].finish_reason}")
